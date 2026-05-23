@@ -94,4 +94,73 @@ readonly class IngestionController
         $data[8] = chr(ord($data[8]) & 0x3f | 0x80); // set bits 6-7 to 10
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
+
+    public function fetchHuggingFaceLatex(): void
+    {
+        $ingestionResult = null;
+        $ingestionError = null;
+
+        try {
+            $url = "https://datasets-server.huggingface.co/rows?dataset=OleehyO%2Flatex-equations&config=default&split=train&offset=0&length=3";
+
+            // Set up stream context in case we need user-agent or special options
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'header' => "User-Agent: PHP-Ingestion-Script\r\n"
+                ]
+            ]);
+
+            $jsonResponse = file_get_contents($url, false, $context);
+            if ($jsonResponse === false) {
+                throw new RuntimeException("Failed to fetch data from Hugging Face.");
+            }
+
+            $data = json_decode($jsonResponse, true, 512, JSON_THROW_ON_ERROR);
+            $rows = $data['rows'] ?? [];
+
+            if (empty($rows)) {
+                throw new RuntimeException("No rows found in the fetched dataset.");
+            }
+
+            $fetchedLatexStrings = [];
+            $qdrantPayloads = [];
+
+            foreach ($rows as $index => $rowItem) {
+                $latexString = $rowItem['row']['text'] ?? null;
+                if ($latexString === null) {
+                    continue;
+                }
+
+                $fetchedLatexStrings[] = $latexString;
+
+                // 1. Qdrant
+                $dummyVector = array_fill(0, 1024, 0.1 * ($index + 1));
+                $qdrantPayloads[] = [
+                    'id' => self::generateUuid4(),
+                    'vector' => ['formula_vector' => $dummyVector],
+                    'payload' => ['latex' => $latexString]
+                ];
+
+                // 2. Neo4j
+                $cypher = "CREATE (f:Formula {latex: \$latexString}) RETURN f";
+                $this->neo4jService->executeCypher($cypher, ['latexString' => $latexString]);
+            }
+
+            if (!empty($qdrantPayloads)) {
+                 $this->qdrantService->upsertPoints('latex_test_collection', $qdrantPayloads);
+            }
+
+            $ingestionResult = [
+                'status' => 'success',
+                'message' => 'Successfully ingested ' . count($fetchedLatexStrings) . ' formulas.',
+                'data' => $fetchedLatexStrings
+            ];
+
+        } catch (Exception $e) {
+            $ingestionError = $e->getMessage();
+        }
+
+        require __DIR__ . '/../Views/test_form.php';
+    }
 }
