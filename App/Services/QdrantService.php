@@ -9,52 +9,47 @@ use RuntimeException;
 class QdrantService
 {
     public function __construct(
-        private readonly string $url,
-        private readonly string $apiKey = ''
+        private readonly string $baseUrl,
+        private readonly string $apiKey
     ) {
     }
 
     public function upsertPoints(string $collection, array $points): array
     {
-        $ch = curl_init();
-        if ($ch === false) {
-            throw new RuntimeException('Failed to initialize cURL.');
-        }
+        $url = sprintf('%s/collections/%s/points?wait=true', rtrim($this->baseUrl, '/'), $collection);
 
-        $endpoint = sprintf('%s/collections/%s/points', rtrim($this->url, '/'), $collection);
+        $ch = curl_init($url);
+
+        if ($ch === false) {
+            throw new RuntimeException('Failed to initialize cURL');
+        }
 
         $payload = json_encode(['points' => $points], JSON_THROW_ON_ERROR);
 
-        $headers = [
-            'Content-Type: application/json',
-            'Accept: application/json',
-        ];
-
-        if ($this->apiKey !== '') {
-            $headers[] = 'api-key: ' . $this->apiKey;
-        }
-
-        curl_setopt($ch, CURLOPT_URL, $endpoint);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => 'PUT',
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'api-key: ' . $this->apiKey,
+            ],
+        ]);
 
         $response = curl_exec($ch);
+        $error = curl_error($ch);
+        $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-        if ($response === false) {
-            $error = curl_error($ch);
-            curl_close($ch);
-            throw new RuntimeException(sprintf('cURL error: %s', $error));
-        }
-
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($httpCode < 200 || $httpCode >= 300) {
-            throw new RuntimeException(sprintf('HTTP error: Received status code %d. Response: %s', $httpCode, $response));
+        if ($response === false) {
+            throw new RuntimeException(sprintf('cURL Error: %s', $error));
         }
 
-        return json_decode((string)$response, true, 512, JSON_THROW_ON_ERROR);
+        if ($statusCode < 200 || $statusCode >= 300) {
+            throw new RuntimeException(sprintf('HTTP Error %d: %s', $statusCode, (string) $response));
+        }
+
+        return json_decode((string) $response, true, 512, JSON_THROW_ON_ERROR);
     }
 }
