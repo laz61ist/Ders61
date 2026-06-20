@@ -6,24 +6,30 @@ namespace App\Services;
 
 use RuntimeException;
 
-class QdrantService
+readonly class QdrantService
 {
     public function __construct(
-        private readonly string $url,
-        private readonly string $apiKey = ''
+        private string $host,
+        private string $apiKey = ''
     ) {
     }
 
+    /**
+     * Upsert points to a Qdrant collection.
+     *
+     * @param string $collection The name of the collection
+     * @param array $points The points to upsert
+     * @return array The response body decoded as an array
+     * @throws RuntimeException If a cURL error occurs or a non-200 HTTP response is received
+     */
     public function upsertPoints(string $collection, array $points): array
     {
-        $ch = curl_init();
+        $url = sprintf('%s/collections/%s/points', rtrim($this->host, '/'), urlencode($collection));
+
+        $ch = curl_init($url);
         if ($ch === false) {
             throw new RuntimeException('Failed to initialize cURL.');
         }
-
-        $endpoint = sprintf('%s/collections/%s/points', rtrim($this->url, '/'), $collection);
-
-        $payload = json_encode(['points' => $points], JSON_THROW_ON_ERROR);
 
         $headers = [
             'Content-Type: application/json',
@@ -34,27 +40,32 @@ class QdrantService
             $headers[] = 'api-key: ' . $this->apiKey;
         }
 
-        curl_setopt($ch, CURLOPT_URL, $endpoint);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $payload = json_encode(['points' => $points], JSON_THROW_ON_ERROR);
+
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => 'PUT',
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_POSTFIELDS => $payload,
+        ]);
 
         $response = curl_exec($ch);
 
         if ($response === false) {
             $error = curl_error($ch);
             curl_close($ch);
-            throw new RuntimeException(sprintf('cURL error: %s', $error));
+            throw new RuntimeException(sprintf('cURL error during Qdrant upsertPoints: %s', $error));
         }
 
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($httpCode < 200 || $httpCode >= 300) {
-            throw new RuntimeException(sprintf('HTTP error: Received status code %d. Response: %s', $httpCode, $response));
+        if ($httpCode !== 200) {
+            throw new RuntimeException(
+                sprintf('Qdrant API returned non-200 HTTP status code %d: %s', $httpCode, $response)
+            );
         }
 
-        return json_decode((string)$response, true, 512, JSON_THROW_ON_ERROR);
+        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
     }
 }
